@@ -1,0 +1,437 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Photon Evolution - Ambient Abyss</title>
+    <style>
+        body {
+            margin: 0; overflow: hidden;
+            background-color: #010103; color: #fff;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; cursor: crosshair; 
+        }
+        canvas { display: block; }
+        #ui {
+            position: absolute; top: 20px; left: 20px;
+            pointer-events: none; text-shadow: 0 0 10px #0ff;
+        }
+        #score-display { font-size: 24px; font-weight: bold; }
+        #tier-display { font-size: 18px; margin-top: 5px; text-shadow: 0 0 10px #ff00ff; transition: color 0.3s; }
+        #stats-display { font-size: 14px; color: #00ffff; margin-top: 5px; opacity: 0.8; }
+        #coords-display { font-size: 14px; color: #aaa; margin-top: 5px; font-family: monospace; }
+        
+        #game-over {
+            position: absolute; top: 50%; left: 50%;
+            transform: translate(-50%, -50%); text-align: center;
+            background: rgba(0, 10, 20, 0.9);
+            padding: 40px; border: 1px solid #0ff;
+            border-radius: 15px; box-shadow: 0 0 30px #0ff;
+            display: none; z-index: 10;
+        }
+        #game-over h1 { margin-top: 0; color: #ff0055; text-shadow: 0 0 15px #ff0055; letter-spacing: 2px; }
+        #game-over p { font-size: 16px; color: #ccc; }
+        button {
+            margin-top: 20px; padding: 10px 30px; font-size: 18px;
+            background: transparent; color: #0ff; border: 2px solid #0ff; border-radius: 5px;
+            cursor: pointer; transition: all 0.3s; box-shadow: 0 0 10px #0ff inset, 0 0 10px #0ff;
+            text-transform: uppercase; letter-spacing: 1px;
+        }
+        button:hover { background: #0ff; color: #000; }
+    </style>
+</head>
+<body>
+
+    <div id="ui">
+        <div id="score-display">Energy Level: <span id="score">0</span></div>
+        <div id="tier-display">Form: <span id="tier-name">Phantom Tadpole</span></div>
+        <div id="stats-display">Mobility: <span id="mobility-stat">Extreme</span></div>
+        <div id="coords-display">Coords: [<span id="coords">0, 0</span>]</div>
+    </div>
+
+    <div id="game-over">
+        <h1>ENTITY DISSIPATED</h1>
+        <p>You were assimilated by a higher lifeform.</p>
+        <p>Final Energy Level: <span id="final-score">0</span></p>
+        <button onclick="restartGame()">Resynthesize</button>
+    </div>
+
+    <canvas id="gameCanvas"></canvas>
+
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const scoreElement = document.getElementById('score');
+        const tierNameElement = document.getElementById('tier-name');
+        const statsElement = document.getElementById('mobility-stat');
+        const coordsElement = document.getElementById('coords');
+        const gameOverScreen = document.getElementById('game-over');
+        const finalScoreElement = document.getElementById('final-score');
+
+        function resize() {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+        }
+        window.addEventListener('resize', resize);
+        resize();
+
+        let mouse = { x: canvas.width / 2, y: canvas.height / 2 };
+        window.addEventListener('mousemove', (e) => { mouse.x = e.clientX; mouse.y = e.clientY; });
+
+        const WORLD_SIZE = 4000; 
+        let camX = 0, camY = 0;  
+
+        let stardust = [];
+        for (let i = 0; i < 400; i++) {
+            stardust.push({
+                x: Math.random() * WORLD_SIZE, y: Math.random() * WORLD_SIZE,
+                size: Math.random() * 2 + 0.5, opacity: Math.random() * 0.5 + 0.1
+            });
+        }
+
+        const colors = ['#00ffff', '#ff00ff', '#ffff00', '#00ff66', '#ff4400', '#9900ff', '#0088ff'];
+        
+        // --- English Tier Configurations --- 
+        const TIER_CONFIG = [
+            { name: "Phantom Tadpole", color: "#00ffff", minR: 0,   maxR: 25,  baseSpeed: 2.2, turnSpeed: 0.10, desc: "Extreme" },
+            { name: "Void Serpent",    color: "#00ff66", minR: 25,  maxR: 45,  baseSpeed: 1.7, turnSpeed: 0.07, desc: "High" },
+            { name: "Neon Jelly",      color: "#ffff00", minR: 45,  maxR: 75,  baseSpeed: 1.3, turnSpeed: 0.05, desc: "Moderate" },
+            { name: "Abyssal Ray",     color: "#ff4400", minR: 75,  maxR: 120, baseSpeed: 0.9, turnSpeed: 0.03, desc: "Slow" },
+            { name: "Astral Leviathan",color: "#ff00ff", minR: 120, maxR: 300, baseSpeed: 0.6, turnSpeed: 0.015, desc: "Lumbering" }
+        ];
+
+        function getTierIndex(radius) {
+            for(let i = 0; i < TIER_CONFIG.length; i++) {
+                if (radius < TIER_CONFIG[i].maxR) return i;
+            }
+            return TIER_CONFIG.length - 1; 
+        }
+
+        let player = { x: WORLD_SIZE/2, y: WORLD_SIZE/2, radius: 12, color: '#00ffff', angle: 0, dead: false };
+        let enemies = [];
+        let nutrients = []; 
+        const MAX_NUTRIENTS = 800; 
+        const MAX_ENEMIES = 80;
+
+        let explosions = []; 
+        let score = 0;
+        let gameActive = true;
+        let globalTime = 0;
+
+        function spawnNutrient() {
+            if (!gameActive || nutrients.length >= MAX_NUTRIENTS) return;
+            nutrients.push({
+                x: Math.random() * WORLD_SIZE, y: Math.random() * WORLD_SIZE,
+                radius: Math.random() * 2 + 1.5,
+                color: colors[Math.floor(Math.random() * colors.length)],
+                offset: Math.random() * 100 
+            });
+        }
+
+        function spawnEnemy() {
+            if (!gameActive || enemies.length >= MAX_ENEMIES) return;
+
+            let rand = Math.random();
+            let targetTier = 0;
+            if (rand < 0.45) targetTier = 0;      
+            else if (rand < 0.75) targetTier = 1; 
+            else if (rand < 0.90) targetTier = 2; 
+            else if (rand < 0.97) targetTier = 3; 
+            else targetTier = 4;                  
+
+            let config = TIER_CONFIG[targetTier];
+            let rMin = Math.max(10, config.minR);
+            let rMax = targetTier === 4 ? 160 : config.maxR;
+            let radius = Math.random() * (rMax - rMin) + rMin;
+
+            let ex, ey;
+            do {
+                ex = Math.random() * WORLD_SIZE;
+                ey = Math.random() * WORLD_SIZE;
+            } while (Math.hypot(ex - player.x, ey - player.y) < canvas.width); 
+
+            enemies.push({
+                x: ex, y: ey, radius: radius,
+                color: colors[Math.floor(Math.random() * colors.length)],
+                angle: Math.random() * Math.PI * 2,
+                targetAngle: Math.random() * Math.PI * 2,
+                animOffset: Math.random() * 100,
+                dead: false
+            });
+        }
+
+        function drawBioGeometry(entity, isPlayer) {
+            let r = entity.radius;
+            let tier = getTierIndex(r);
+            let t = globalTime + (entity.animOffset || 0); 
+            
+            ctx.save();
+            ctx.translate(entity.x, entity.y);
+            ctx.rotate(entity.angle); 
+
+            ctx.shadowBlur = isPlayer ? 25 : 15;
+            ctx.shadowColor = entity.color;
+            ctx.strokeStyle = entity.color;
+            ctx.lineWidth = 2 + r * 0.02;
+            ctx.lineJoin = "round"; ctx.lineCap = "round";
+
+            ctx.beginPath();
+            if (tier === 0) {
+                ctx.moveTo(r * 0.6, 0); ctx.lineTo(-r * 0.3, r * 0.4); ctx.lineTo(-r * 0.3, -r * 0.4); ctx.closePath(); ctx.stroke();
+                ctx.beginPath(); ctx.moveTo(-r * 0.3, 0);
+                for (let i = 0; i <= 5; i++) ctx.lineTo(-r * 0.3 - (i / 5) * (r * 1.5), Math.sin(t * 0.2 - i) * (r * 0.3) * (i / 5));
+                ctx.stroke();
+            } else if (tier === 1) {
+                for (let i = 0; i < 5; i++) {
+                    let segR = r * 0.5 * (1 - i * 0.15), dist = i * r * 0.6;
+                    let sway = Math.sin(t * 0.15 - i * 0.8) * (r * 0.4); 
+                    ctx.save(); ctx.translate(-dist, sway);
+                    ctx.beginPath(); ctx.moveTo(segR, 0); ctx.lineTo(0, segR * 0.8); ctx.lineTo(-segR, 0); ctx.lineTo(0, -segR * 0.8); ctx.closePath(); ctx.stroke();
+                    ctx.restore();
+                    if (i > 0) {
+                        ctx.beginPath(); ctx.moveTo(-(i-1)*r*0.6, Math.sin(t * 0.15 - (i-1) * 0.8) * (r * 0.4)); ctx.lineTo(-dist, sway); ctx.stroke();
+                    }
+                }
+            } else if (tier === 2) {
+                ctx.moveTo(0, -r * 0.8); ctx.lineTo(r * 0.6, -r * 0.4); ctx.lineTo(r * 0.8, 0); ctx.lineTo(r * 0.6, r * 0.4); ctx.lineTo(0, r * 0.8); ctx.closePath(); ctx.stroke();
+                ctx.beginPath(); ctx.moveTo(r * 0.4, -r * 0.5); ctx.lineTo(r * 0.4, r * 0.5); ctx.stroke();
+                for (let j = -1; j <= 1; j++) {
+                    ctx.beginPath(); ctx.moveTo(0, j * r * 0.5);
+                    for (let i = 0; i <= 4; i++) ctx.lineTo(-(i / 4) * (r * 1.8), j * r * 0.5 + Math.sin(t * 0.1 + i + j) * (r * 0.2));
+                    ctx.stroke();
+                }
+            } else if (tier === 3) {
+                let wingSway = Math.sin(t * 0.1) * (r * 0.2); 
+                ctx.moveTo(r, 0); ctx.lineTo(0, r + wingSway); ctx.lineTo(-r * 0.8, 0); ctx.lineTo(0, -r - wingSway); ctx.closePath(); ctx.stroke();
+                ctx.beginPath(); ctx.moveTo(r * 0.4, 0); ctx.lineTo(0, r * 0.4); ctx.lineTo(-r * 0.4, 0); ctx.lineTo(0, -r * 0.4); ctx.closePath(); ctx.stroke();
+                ctx.beginPath(); ctx.moveTo(-r * 0.8, 0); ctx.lineTo(-r * 2, r * 0.3 + Math.sin(t*0.2)*r*0.2); ctx.moveTo(-r * 0.8, 0); ctx.lineTo(-r * 2, -r * 0.3 + Math.sin(t*0.2 + 3)*r*0.2); ctx.stroke();
+            } else {
+                ctx.moveTo(r * 1.2, 0); ctx.lineTo(r * 0.8, r * 0.5); ctx.lineTo(-r * 0.4, r * 0.6); ctx.lineTo(-r * 1.0, 0); ctx.lineTo(-r * 0.4, -r * 0.6); ctx.lineTo(r * 0.8, -r * 0.5); ctx.closePath(); ctx.stroke();
+                ctx.beginPath(); ctx.moveTo(r * 1.2, 0); ctx.lineTo(r * 0.4, 0); ctx.stroke();
+                for (let i = -1; i <= 1; i++) { ctx.beginPath(); ctx.moveTo(i * r * 0.3, -r * 0.55); ctx.lineTo(i * r * 0.3, r * 0.55); ctx.stroke(); }
+                ctx.save(); ctx.translate(-r * 1.0, 0); ctx.rotate(Math.sin(t * 0.05) * 0.3);
+                ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(-r * 0.8, r * 0.8); ctx.lineTo(-r * 0.5, 0); ctx.lineTo(-r * 0.8, -r * 0.8); ctx.closePath(); ctx.stroke();
+                ctx.restore();
+            }
+
+            ctx.beginPath();
+            ctx.arc((tier === 1) ? r * 0.5 : (tier === 4) ? r * 0.4 : r * 0.2, 0, r * 0.15, 0, Math.PI * 2);
+            ctx.fillStyle = '#ffffff'; ctx.shadowBlur = 10; ctx.shadowColor = '#ffffff'; ctx.fill();
+            ctx.restore();
+            
+            if (isPlayer) {
+                ctx.beginPath(); ctx.arc(entity.x, entity.y, entity.radius, 0, Math.PI * 2);
+                ctx.strokeStyle = 'rgba(255, 255, 255, 0.15)'; ctx.lineWidth = 1; ctx.setLineDash([5, 5]); ctx.stroke(); ctx.setLineDash([]);
+            }
+        }
+
+        function checkEntityCollision(a, b) {
+            if (a.dead || b.dead) return;
+            let dist = Math.hypot(a.x - b.x, a.y - b.y);
+
+            if (dist < a.radius + b.radius) {
+                if (a.radius > b.radius * 1.05) {
+                    a.radius = Math.sqrt(a.radius**2 + b.radius**2 * 0.25); 
+                    b.dead = true;
+                    explosions.push({x: b.x, y: b.y, radius: b.radius, life: 1.0}); 
+                    if (a === player) score += Math.floor(b.radius);
+                } else if (b.radius > a.radius * 1.05) {
+                    b.radius = Math.sqrt(b.radius**2 + a.radius**2 * 0.25);
+                    a.dead = true;
+                    explosions.push({x: a.x, y: a.y, radius: a.radius, life: 1.0});
+                    if (b === player) score += Math.floor(a.radius);
+                }
+            }
+        }
+
+        function update() {
+            if (!gameActive) return;
+            
+            globalTime += 0.6;
+
+            ctx.fillStyle = 'rgba(1, 1, 3, 0.35)';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            camX += (player.x - canvas.width / 2 - camX) * 0.1;
+            camY += (player.y - canvas.height / 2 - camY) * 0.1;
+
+            ctx.save();
+            ctx.translate(-camX, -camY);
+
+            ctx.fillStyle = '#fff';
+            stardust.forEach(dust => {
+                ctx.globalAlpha = dust.opacity;
+                ctx.beginPath(); ctx.arc(dust.x, dust.y, dust.size, 0, Math.PI*2); ctx.fill();
+                dust.x -= 0.2; 
+                if (dust.x < 0) dust.x += WORLD_SIZE;
+            });
+            ctx.globalAlpha = 1.0;
+
+            ctx.strokeStyle = 'rgba(0, 200, 255, 0.3)';
+            ctx.lineWidth = 10;
+            ctx.shadowBlur = 20; ctx.shadowColor = '#00ffff';
+            ctx.strokeRect(0, 0, WORLD_SIZE, WORLD_SIZE);
+            ctx.shadowBlur = 0;
+
+            for (let i = nutrients.length - 1; i >= 0; i--) {
+                let n = nutrients[i];
+                if (n.x > camX - 50 && n.x < camX + canvas.width + 50 &&
+                    n.y > camY - 50 && n.y < camY + canvas.height + 50) {
+                    let pulse = Math.sin(globalTime * 0.05 + n.offset) * 0.5 + 1; 
+                    ctx.beginPath();
+                    ctx.arc(n.x, n.y, n.radius * pulse, 0, Math.PI * 2);
+                    ctx.fillStyle = n.color;
+                    ctx.shadowBlur = 8; ctx.shadowColor = n.color; ctx.fill();
+                    ctx.shadowBlur = 0; 
+                }
+            }
+
+            let allEntities = [player, ...enemies];
+            for (let ent of allEntities) {
+                if (ent.dead) continue;
+                for (let j = nutrients.length - 1; j >= 0; j--) {
+                    let n = nutrients[j];
+                    if (Math.hypot(ent.x - n.x, ent.y - n.y) < ent.radius + n.radius) {
+                        let newArea = Math.PI * ent.radius**2 + Math.PI * n.radius**2 * 4; 
+                        ent.radius = Math.sqrt(newArea / Math.PI);
+                        if (ent === player) score += 1; 
+                        nutrients.splice(j, 1); 
+                    }
+                }
+            }
+
+            for (let i = 0; i < enemies.length; i++) {
+                let e = enemies[i];
+                if (e.dead) continue;
+
+                let eTier = getTierIndex(e.radius);
+                let config = TIER_CONFIG[eTier]; 
+
+                let nearestThreat = null, minDistThreat = Infinity;
+                let nearestPrey = null, minDistPrey = Infinity;
+                let sightRange = e.radius * 6 + 100; 
+
+                for (let other of allEntities) {
+                    if (other === e || other.dead) continue;
+                    let dist = Math.hypot(e.x - other.x, e.y - other.y);
+                    if (dist > sightRange) continue;
+
+                    if (other.radius > e.radius * 1.05) {
+                        if (dist < minDistThreat) { minDistThreat = dist; nearestThreat = other; }
+                    } else if (e.radius > other.radius * 1.05) {
+                        if (dist < minDistPrey) { minDistPrey = dist; nearestPrey = other; }
+                    }
+                }
+
+                if (nearestThreat) e.targetAngle = Math.atan2(e.y - nearestThreat.y, e.x - nearestThreat.x);
+                else if (nearestPrey) e.targetAngle = Math.atan2(nearestPrey.y - e.y, nearestPrey.x - e.x);
+                else if (Math.random() < 0.02) e.targetAngle += (Math.random() - 0.5) * 1.5;
+
+                let diff = e.targetAngle - e.angle;
+                while (diff < -Math.PI) diff += Math.PI * 2;
+                while (diff > Math.PI) diff -= Math.PI * 2;
+                e.angle += diff * config.turnSpeed;
+
+                let currentSpeed = config.baseSpeed;
+                if (nearestThreat) currentSpeed *= 1.3; 
+
+                e.x += Math.cos(e.angle) * currentSpeed;
+                e.y += Math.sin(e.angle) * currentSpeed;
+
+                if (e.x < e.radius) { e.x = e.radius; e.angle = Math.PI - e.angle; e.targetAngle = e.angle; }
+                if (e.x > WORLD_SIZE - e.radius) { e.x = WORLD_SIZE - e.radius; e.angle = Math.PI - e.angle; e.targetAngle = e.angle; }
+                if (e.y < e.radius) { e.y = e.radius; e.angle = -e.angle; e.targetAngle = e.angle; }
+                if (e.y > WORLD_SIZE - e.radius) { e.y = WORLD_SIZE - e.radius; e.angle = -e.angle; e.targetAngle = e.angle; }
+            }
+
+            if (!player.dead) {
+                let targetWorldX = mouse.x + camX;
+                let targetWorldY = mouse.y + camY;
+                let dx = targetWorldX - player.x;
+                let dy = targetWorldY - player.y;
+                let distToMouse = Math.hypot(dx, dy);
+
+                let pTier = getTierIndex(player.radius);
+                let pConfig = TIER_CONFIG[pTier];
+
+                if (distToMouse > 10) {
+                    let pSpeed = pConfig.baseSpeed * 1.15;
+                    player.x += (dx / distToMouse) * pSpeed;
+                    player.y += (dy / distToMouse) * pSpeed;
+                    
+                    let targetAngle = Math.atan2(dy, dx);
+                    let diff = targetAngle - player.angle;
+                    while (diff < -Math.PI) diff += Math.PI * 2;
+                    while (diff > Math.PI) diff -= Math.PI * 2;
+                    player.angle += diff * pConfig.turnSpeed; 
+                }
+
+                player.x = Math.max(player.radius, Math.min(player.x, WORLD_SIZE - player.radius));
+                player.y = Math.max(player.radius, Math.min(player.y, WORLD_SIZE - player.radius));
+                
+                scoreElement.innerText = score;
+                tierNameElement.innerText = pConfig.name;
+                tierNameElement.style.color = pConfig.color;
+                statsElement.innerText = pConfig.desc;
+                statsElement.style.color = pConfig.color;
+                coordsElement.innerText = `${Math.floor(player.x)}, ${Math.floor(player.y)}`;
+            }
+
+            for (let i = 0; i < allEntities.length; i++) {
+                for (let j = i + 1; j < allEntities.length; j++) {
+                    checkEntityCollision(allEntities[i], allEntities[j]);
+                }
+            }
+            enemies = enemies.filter(e => !e.dead);
+
+            for (let i = explosions.length - 1; i >= 0; i--) {
+                let exp = explosions[i];
+                ctx.beginPath();
+                ctx.arc(exp.x, exp.y, exp.radius * (2 - exp.life), 0, Math.PI * 2);
+                ctx.fillStyle = `rgba(255, 255, 255, ${exp.life * 0.5})`;
+                ctx.fill();
+                exp.life -= 0.05;
+                if (exp.life <= 0) explosions.splice(i, 1);
+            }
+
+            enemies.forEach(e => drawBioGeometry(e, false));
+            if (!player.dead) drawBioGeometry(player, true);
+            else gameOver();
+
+            ctx.restore(); 
+            requestAnimationFrame(update);
+        }
+
+        function gameOver() {
+            gameActive = false;
+            gameOverScreen.style.display = 'block';
+            finalScoreElement.innerText = score;
+        }
+
+        function restartGame() {
+            player.radius = 12; 
+            player.x = WORLD_SIZE / 2;
+            player.y = WORLD_SIZE / 2;
+            player.dead = false;
+            score = 0;
+            enemies = [];
+            nutrients = []; 
+            explosions = [];
+            gameActive = true;
+            globalTime = 0;
+            gameOverScreen.style.display = 'none';
+            
+            for(let i = 0; i < MAX_NUTRIENTS; i++) spawnNutrient();
+            for(let i = 0; i < MAX_ENEMIES; i++) spawnEnemy();
+            update();
+        }
+
+        setInterval(() => {
+            spawnEnemy();
+            for(let i = 0; i < 20; i++) spawnNutrient();
+        }, 1000);
+
+        restartGame();
+
+    </script>
+</body>
+</html>
